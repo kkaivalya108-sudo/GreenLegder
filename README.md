@@ -193,7 +193,7 @@ The ESP32 calls a small, database-free API on your laptop. Render is not used, b
 1. On Windows, open PowerShell and run:
    ```powershell
    cd "C:\Users\Kaivalya Kulkarni\GreenLegder\backend"
-   py -3.11 -m pip install -r requirements.txt
+   py -3.11 -m pip install -r requirements-ai-local.txt
    py -3.11 model\train_model.py
    py -3.11 ai_app.py
    ```
