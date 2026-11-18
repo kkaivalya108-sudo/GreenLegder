@@ -184,7 +184,18 @@ GND      →  GND (both sensors)
 | R² / MAE | Printed at training time; synthetic holdout metrics are not real-world accuracy |
 | Carbon formula | `Credits = floor(CO₂_tonnes)` · 1 credit = 1 tonne |
 
-The deployment start commands train the model before starting Gunicorn. For local development, install `backend/requirements.txt`, then run `python model/train_model.py` from the `backend` folder before starting the API. The ESP32's carbon fields require the backend to be deployed and its `/api/ai/estimate` URL and farm inputs to be configured. Training uses synthetic data, so estimates are prototype outputs and are not verified or issued carbon credits.
+The deployment start commands train the model before starting Gunicorn. For local development, install `backend/requirements.txt`, then run `python model/train_model.py` from the `backend` folder before starting the API. Training uses synthetic data, so estimates are prototype outputs and are not verified or issued carbon credits.
+
+### Deploy a standalone model API on Render
+
+Use this option if you do not have access to the existing GreenLedger Render workspace. It serves only the ML estimate route and does not require MongoDB.
+
+1. In your Render personal workspace, choose **New → Web Service** and connect the private GitHub repository `kkaivalya108-sudo/GreenLegder`, branch `main`.
+2. Set **Root Directory** to `backend`.
+3. Set **Build Command** to `pip install -r requirements.txt`.
+4. Set **Start Command** to `python model/train_model.py && gunicorn ai_app:app --bind 0.0.0.0:$PORT --workers 2`.
+5. Create the service and wait for logs to show training complete and Gunicorn running. The new service's URL will be shown in Render.
+6. Set `AI_ESTIMATE_URL` in the local `secrets.h` to `<new-service-url>/api/ai/estimate`, then recompile and upload the ESP32 sketch.
 
 ---
 

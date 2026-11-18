@@ -161,7 +161,7 @@ bool getModelEstimate(float moisture, float temperature, float& co2Tons,
     Serial.println("[ML] Skipped: WiFi is offline");
     return false;
   }
-  if (String(AI_ESTIMATE_URL).startsWith("https://YOUR_") ||
+  if (String(AI_ESTIMATE_URL).startsWith("https://YOUR") ||
       FARM_NDVI < 0.0f || FARM_NDVI > 1.0f ||
       FARM_AREA_HECTARES <= 0.0f || FARM_SOIL_ORGANIC_CARBON <= 0.0f) {
     Serial.println("[ML] Configure API URL and farm inputs in secrets.h");

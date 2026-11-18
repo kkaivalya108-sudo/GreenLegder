@@ -4,7 +4,7 @@
 const char* WIFI_SSID = "YOUR_WIFI_NAME";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* THINGSPEAK_WRITE_API_KEY = "YOUR_THINGSPEAK_WRITE_API_KEY";
-const char* AI_ESTIMATE_URL = "https://greenledger-api-tzkg.onrender.com/api/ai/estimate";
+const char* AI_ESTIMATE_URL = "https://YOUR-RENDER-SERVICE.onrender.com/api/ai/estimate";
 
 // Farm inputs required by the ML model. Replace with values for this farm.
 const float FARM_NDVI = -1.0f;                 // valid range 0.0–1.0
