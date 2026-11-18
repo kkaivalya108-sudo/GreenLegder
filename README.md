@@ -126,16 +126,19 @@ curl -X POST http://localhost:5000/api/sensors/data \
 
 ## ESP32 Hardware Setup and ThingSpeak
 
-The ESP32 uses soil moisture and temperature as inputs to the GreenLedger AI endpoint, then uploads only carbon results to ThingSpeak every 30 seconds. If the AI endpoint is unavailable or farm inputs are not configured, it does not upload an entry.
+The ESP32 preserves the current sensor fields in ThingSpeak and adds the model's estimated carbon-credit count as Field 5. Soil moisture and temperature are also sent to the GreenLedger AI endpoint as model inputs. If the AI endpoint is unavailable, sensor fields still upload and Field 5 is left empty.
 
 ### Create and configure a ThingSpeak channel
 
-1. Create a channel in ThingSpeak and enable these two numeric fields:
-   - Field 1: Estimated CO₂ Sequestered (tonnes)
-   - Field 2: Estimated Carbon Credits (credits)
+1. Keep your current channel fields and add/enable Field 5:
+   - Field 1: Soil Moisture (%)
+   - Field 2: Temperature (°C)
+   - Field 3: Humidity (%)
+   - Field 4: Estimated SOC (%) (moisture-based proxy)
+   - Field 5: Estimated Carbon Credits (credits)
 2. Save the channel, then open **API Keys** and copy its **Write API Key** (not the Channel ID or Read API Key).
 3. Copy `esp32/greenledger_esp32_v2_1/secrets.example.h` to `esp32/greenledger_esp32_v2_1/secrets.h`. Set WiFi, the ThingSpeak Write API Key, and `AI_ESTIMATE_URL` to your deployed backend's `/api/ai/estimate` endpoint.
-4. Set the farm's NDVI (0–1), area in hectares, and soil organic carbon (%) in `secrets.h`. These are required model inputs; live moisture and temperature are also sent to the model but are not uploaded as ThingSpeak fields.
+4. Set the farm's NDVI (0–1), area in hectares, and soil organic carbon (%) in `secrets.h`. These are model inputs; the existing Field 4 SOC proxy is not used as a measured SOC value.
 5. Select **DOIT ESP32 DEVKIT V1** in Arduino IDE and upload the sketch. Install **ArduinoJson 6**, **DHT sensor library** by Adafruit, and **Adafruit Unified Sensor**. Open Serial Monitor at 115200 baud; a positive ThingSpeak entry response confirms upload.
 
 ThingSpeak's free channel tier requires at least 15 seconds between updates; this sketch sends every 30 seconds. Keep the Write API Key private. If ThingSpeak replies with `0`, check the key and channel fields, and make sure the update interval is not too short. These are model estimates, not verified or issued carbon credits.

@@ -81,16 +81,16 @@ void loop() {
     // Schedule the next attempt even when offline, instead of retrying every loop.
     lastSendAttempt = now;
 
-    float moisture, temp, humidity;
+    float moisture, temp, humidity, socProxy;
 
-    if (!readSensors(moisture, temp, humidity)) {
+    if (!readSensors(moisture, temp, humidity, socProxy)) {
       Serial.println("[ERROR] Sensor read failed — check wiring");
       blink(3, 300);
       delay(5000);
       return;
     }
 
-    printReadings(moisture, temp, humidity);
+    printReadings(moisture, temp, humidity, socProxy);
 
     float co2Tons = 0.0f;
     int credits = 0;
@@ -101,22 +101,24 @@ void loop() {
     if (hasModelEstimate) {
       Serial.print("[ML] Estimated CO2: "); Serial.print(co2Tons, 3);
       Serial.print(" tonnes; credits: "); Serial.println(credits);
-      if (sendToThingSpeak(co2Tons, credits)) {
-        blink(2, 150); // 2 blinks = successful carbon result upload
-      } else {
-        Serial.println("[ERROR] ThingSpeak upload failed — retrying in 30s");
-        blink(5, 80);
-      }
     } else {
-      Serial.println("[ThingSpeak] Skipped because no ML result is available");
-      blink(3, 250);
+      Serial.println("[ML] No credit estimate; sensor fields will still upload");
+    }
+
+    if (sendToThingSpeak(moisture, temp, humidity, socProxy,
+                         hasModelEstimate, credits)) {
+      blink(2, 150);
+    } else {
+      Serial.println("[ERROR] ThingSpeak upload failed — retrying in 30s");
+      blink(5, 80);
     }
   }
   delay(500);
 }
 
 /* ── Read sensors ── */
-bool readSensors(float& moisture, float& temp, float& humidity) {
+bool readSensors(float& moisture, float& temp, float& humidity,
+                 float& socProxy) {
 
   // Soil moisture — average 10 ADC readings to reduce noise
   long adc_sum = 0;
@@ -137,6 +139,10 @@ bool readSensors(float& moisture, float& temp, float& humidity) {
     temp     = dht.readTemperature();
 
     if (!isnan(humidity) && !isnan(temp)) {
+      // Retain the existing Field 4 moisture-based SOC proxy.
+      // It is not a measured soil organic carbon value.
+      socProxy = 0.18f + 1.24f * (moisture / 100.0f);
+      socProxy = constrain(socProxy, 0.3f, 5.0f);
       return true;
     }
     Serial.print("[DHT] Read failed, attempt ");
@@ -209,8 +215,9 @@ bool getModelEstimate(float moisture, float temperature, float& co2Tons,
   return true;
 }
 
-/* ── Upload only carbon-credit model outputs to ThingSpeak ── */
-bool sendToThingSpeak(float co2Tons, int credits) {
+/* ── Upload existing sensor fields and the optional credit estimate ── */
+bool sendToThingSpeak(float moisture, float temp, float humidity,
+                      float socProxy, bool hasModelEstimate, int credits) {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] Not connected — skipping send");
@@ -224,10 +231,14 @@ bool sendToThingSpeak(float co2Tons, int credits) {
     return false;
   }
 
-  // Channel Field 1 = estimated CO2 sequestered (tonnes).
-  // Channel Field 2 = estimated carbon credits (1 credit per tonne).
-  String body = "field1=" + String(co2Tons, 3) +
-                "&field2=" + String(credits);
+  // Preserve current channel fields 1–4 and add credit count as Field 5.
+  String body = "field1=" + String(moisture, 1) +
+                "&field2=" + String(temp, 1) +
+                "&field3=" + String(humidity, 1) +
+                "&field4=" + String(socProxy, 2);
+  if (hasModelEstimate) {
+    body += "&field5=" + String(credits);
+  }
 
   WiFiClientSecure client;
   // TLS encrypts the request. For production, replace this with setCACert()
@@ -303,10 +314,11 @@ void blink(int n, int ms) {
 }
 
 /* ── Print readings to Serial Monitor ── */
-void printReadings(float m, float t, float h) {
+void printReadings(float m, float t, float h, float socProxy) {
   Serial.println("─────────────────────────────");
   Serial.print("  Soil Moisture : "); Serial.print(m,   1); Serial.println(" %");
   Serial.print("  Temperature   : "); Serial.print(t,   1); Serial.println(" °C");
   Serial.print("  Humidity      : "); Serial.print(h,   1); Serial.println(" %");
+  Serial.print("  Estimated SOC : "); Serial.print(socProxy, 2); Serial.println(" % (proxy)");
   Serial.println("─────────────────────────────");
 }
