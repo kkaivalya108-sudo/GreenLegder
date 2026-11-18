@@ -137,7 +137,7 @@ The ESP32 preserves the current sensor fields in ThingSpeak and adds the model's
    - Field 4: Estimated SOC (%) (moisture-based proxy)
    - Field 5: Estimated Carbon Credits (credits)
 2. Save the channel, then open **API Keys** and copy its **Write API Key** (not the Channel ID or Read API Key).
-3. Copy `esp32/greenledger_esp32_v2_1/secrets.example.h` to `esp32/greenledger_esp32_v2_1/secrets.h`. Set WiFi, the ThingSpeak Write API Key, and `AI_ESTIMATE_URL` to your deployed backend's `/api/ai/estimate` endpoint.
+3. Copy `esp32/greenledger_esp32_v2_1/secrets.example.h` to `esp32/greenledger_esp32_v2_1/secrets.h`. Set WiFi, the ThingSpeak Write API Key, and `AI_ESTIMATE_URL` to your laptop's local API address as described below.
 4. Set the farm's NDVI (0–1), area in hectares, and soil organic carbon (%) in `secrets.h`. These are model inputs; the existing Field 4 SOC proxy is not used as a measured SOC value.
 5. Select **DOIT ESP32 DEVKIT V1** in Arduino IDE and upload the sketch. Install **ArduinoJson 6**, **DHT sensor library** by Adafruit, and **Adafruit Unified Sensor**. Open Serial Monitor at 115200 baud; a positive ThingSpeak entry response confirms upload.
 
@@ -166,7 +166,7 @@ GND      →  GND (both sensors)
 2. Install the ESP32 board package in Arduino IDE if needed.
 3. Install via Library Manager: **DHT sensor library** by Adafruit and **Adafruit Unified Sensor**.
 4. Open `esp32/greenledger_esp32_v2_1/greenledger_esp32_v2_1.ino`.
-5. Copy `secrets.example.h` to `secrets.h` in the same folder and fill in WiFi, ThingSpeak, backend URL, and farm inputs there.
+5. Copy `secrets.example.h` to `secrets.h` in the same folder and fill in WiFi, ThingSpeak, local API URL, and farm inputs there.
 6. Install **ArduinoJson 6**, **DHT sensor library** by Adafruit, and **Adafruit Unified Sensor**.
 7. Select **DOIT ESP32 DEVKIT V1** and upload.
 
@@ -184,18 +184,24 @@ GND      →  GND (both sensors)
 | R² / MAE | Printed at training time; synthetic holdout metrics are not real-world accuracy |
 | Carbon formula | `Credits = floor(CO₂_tonnes)` · 1 credit = 1 tonne |
 
-The deployment start commands train the model before starting Gunicorn. For local development, install `backend/requirements.txt`, then run `python model/train_model.py` from the `backend` folder before starting the API. Training uses synthetic data, so estimates are prototype outputs and are not verified or issued carbon credits.
+The model is a Random Forest trained on synthetic data, so estimates are prototype outputs and are not verified or issued carbon credits. The local API trains it from `backend/model/train_model.py` before serving requests.
 
-### Deploy a standalone model API on Render
+### Run the model API locally (no Render)
 
-Use this option if you do not have access to the existing GreenLedger Render workspace. It serves only the ML estimate route and does not require MongoDB.
+The ESP32 calls a small, database-free API on your laptop. Render is not used, but the laptop must remain on and connected to the same WiFi as the ESP32.
 
-1. In your Render personal workspace, choose **New → Web Service** and connect the private GitHub repository `kkaivalya108-sudo/GreenLegder`, branch `main`.
-2. Set **Root Directory** to `backend`.
-3. Set **Build Command** to `pip install -r requirements.txt`.
-4. Set **Start Command** to `python model/train_model.py && gunicorn ai_app:app --bind 0.0.0.0:$PORT --workers 2`.
-5. Create the service and wait for logs to show training complete and Gunicorn running. The new service's URL will be shown in Render.
-6. Set `AI_ESTIMATE_URL` in the local `secrets.h` to `<new-service-url>/api/ai/estimate`, then recompile and upload the ESP32 sketch.
+1. On Windows, open PowerShell and run:
+   ```powershell
+   cd "C:\Users\Kaivalya Kulkarni\GreenLegder\backend"
+   py -3.11 -m pip install -r requirements.txt
+   py -3.11 model\train_model.py
+   py -3.11 ai_app.py
+   ```
+2. Keep that PowerShell window open while the ESP32 is operating. The API listens on port 5001.
+3. Run `ipconfig` and find the laptop's IPv4 address on the same WiFi network as the ESP32.
+4. Set `AI_ESTIMATE_URL` in `esp32/greenledger_esp32_v2_1/secrets.h` to `http://<laptop-ipv4>:5001/api/ai/estimate`.
+5. If Windows Firewall asks, allow Python on **Private networks**. Do not allow it on public networks.
+6. Recompile and upload the ESP32 sketch. If the laptop's IP changes, update `AI_ESTIMATE_URL` and upload again.
 
 ---
 

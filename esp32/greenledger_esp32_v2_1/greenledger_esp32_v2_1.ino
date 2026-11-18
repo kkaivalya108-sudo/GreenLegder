@@ -22,6 +22,7 @@
  */
 
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -161,7 +162,7 @@ bool getModelEstimate(float moisture, float temperature, float& co2Tons,
     Serial.println("[ML] Skipped: WiFi is offline");
     return false;
   }
-  if (String(AI_ESTIMATE_URL).startsWith("https://YOUR") ||
+  if (String(AI_ESTIMATE_URL).startsWith("http://YOUR_") ||
       FARM_NDVI < 0.0f || FARM_NDVI > 1.0f ||
       FARM_AREA_HECTARES <= 0.0f || FARM_SOIL_ORGANIC_CARBON <= 0.0f) {
     Serial.println("[ML] Configure API URL and farm inputs in secrets.h");
@@ -181,13 +182,10 @@ bool getModelEstimate(float moisture, float temperature, float& co2Tons,
   String body;
   serializeJson(requestDoc, body);
 
-  WiFiClientSecure client;
-  // See the ThingSpeak request below: TLS is encrypted, but server validation
-  // should be enabled with a CA certificate before production use.
-  client.setInsecure();
+  // The model API runs on the local laptop over the farm's private WiFi.
+  WiFiClient client;
   HTTPClient http;
-  // Render may need time to wake and train the model on the first request.
-  http.setTimeout(60000);
+  http.setTimeout(15000);
   if (!http.begin(client, AI_ESTIMATE_URL)) {
     Serial.println("[ML] Could not start API request");
     return false;

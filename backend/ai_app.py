@@ -1,6 +1,7 @@
 """Small, database-free Flask app for the ESP32 carbon estimate endpoint."""
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import os
 
 from model.predictor import predict
 
@@ -48,3 +49,7 @@ def estimate():
     result["credits"] = int(result["co2_tons"])
     result["crop_factor"] = factor
     return jsonify(result)
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("AI_PORT", "5001")), debug=False)
