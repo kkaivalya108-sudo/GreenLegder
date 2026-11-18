@@ -5,6 +5,9 @@ Supports both old (7 features) and new (11 features) models.
 """
 import numpy as np
 import joblib, os
+import subprocess
+import sys
+import time
 from sklearn.ensemble import RandomForestRegressor
 
 _DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -21,11 +24,46 @@ def _load():
         mp = os.path.join(_DIR,"carbon_model.pkl")
         sp = os.path.join(_DIR,"scaler.pkl")
         fp = os.path.join(_DIR,"features.pkl")
-        if not os.path.exists(mp):
-            raise FileNotFoundError("Model not found. Run: python model/train_model.py")
+        _ensure_artifacts([mp, sp, fp])
         _model  = joblib.load(mp)
         _scaler = joblib.load(sp)
         _features = joblib.load(fp) if os.path.exists(fp) else None
+
+def _ensure_artifacts(paths):
+    """Train once on demand when a deployment has no generated model files."""
+    if all(os.path.exists(path) for path in paths):
+        return
+
+    lock_path = os.path.join(_DIR, ".model_training.lock")
+    deadline = time.time() + 300
+    while True:
+        if all(os.path.exists(path) for path in paths):
+            return
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(lock_fd)
+            break
+        except FileExistsError:
+            if time.time() >= deadline:
+                raise FileNotFoundError("Timed out waiting for carbon model training")
+            time.sleep(1)
+
+    try:
+        if not all(os.path.exists(path) for path in paths):
+            script = os.path.join(_DIR, "train_model.py")
+            try:
+                subprocess.run([sys.executable, script], cwd=_DIR, check=True)
+            except subprocess.CalledProcessError as exc:
+                raise FileNotFoundError(
+                    "Carbon model training failed; check backend dependencies and logs"
+                ) from exc
+        if not all(os.path.exists(path) for path in paths):
+            raise FileNotFoundError("Training finished without creating all model files")
+    finally:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
 
 def predict(ndvi, area_hectares, soil_organic_carbon,
             temperature_avg=28.0, soil_moisture_avg=55.0,

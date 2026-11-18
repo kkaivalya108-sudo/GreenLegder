@@ -186,7 +186,8 @@ bool getModelEstimate(float moisture, float temperature, float& co2Tons,
   // should be enabled with a CA certificate before production use.
   client.setInsecure();
   HTTPClient http;
-  http.setTimeout(15000);
+  // Render may need time to wake and train the model on the first request.
+  http.setTimeout(60000);
   if (!http.begin(client, AI_ESTIMATE_URL)) {
     Serial.println("[ML] Could not start API request");
     return false;
