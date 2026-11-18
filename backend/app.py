@@ -62,3 +62,7 @@ def health():
         db_status = "disconnected"
         print(f"MongoDB ping ERROR: {type(e).__name__}: {e}")
     return jsonify({"api": "ok", "database": db_status})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False)

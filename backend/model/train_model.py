@@ -2,16 +2,14 @@
 GreenLedger Carbon Estimation Model v3.0
 =========================================
 Improvements:
-1. Seasonal correlation — NDVI and moisture correlated with crop season
-2. Soil type variation — 4 Maharashtra soil types with different carbon factors
-3. No-till maturity — carbon benefit increases over years of practice
-4. Irrigation effect — irrigated farms maintain moisture in dry seasons
-5. 11 features instead of 7
-6. 4000 training samples
+1. Synthetic seasonal correlation between NDVI, moisture, and crop season
+2. Simulated soil types, practice maturity, and irrigation effects
+3. 11 input features
+4. 4000 generated training samples (not measured farm observations)
 """
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
 from sklearn.preprocessing import StandardScaler
@@ -80,7 +78,7 @@ def generate(n=4000):
 print("="*60)
 print("GreenLedger Carbon Estimation Model v3.0")
 print("="*60)
-print("\nGenerating 4000 realistic Maharashtra farm samples...")
+print("\nGenerating 4000 synthetic demo samples (not measured farm data)...")
 df = generate(4000)
 print(f"  CO2 range  : {df.co2_tons.min():.2f} - {df.co2_tons.max():.2f} tonnes")
 print(f"  CO2 mean   : {df.co2_tons.mean():.2f} tonnes")
@@ -96,27 +94,17 @@ Xtr_s  = scaler.fit_transform(Xtr)
 Xte_s  = scaler.transform(Xte)
 
 print("\nTraining Random Forest (300 trees, 11 features)...")
-rf = RandomForestRegressor(n_estimators=300, max_depth=16, min_samples_leaf=2,
-                           min_samples_split=4, max_features='sqrt', random_state=SEED, n_jobs=-1)
-rf.fit(Xtr_s, ytr)
-rf_pred = rf.predict(Xte_s)
-rf_mae  = mean_absolute_error(yte, rf_pred)
-rf_r2   = r2_score(yte, rf_pred)
-rf_rmse = np.sqrt(mean_squared_error(yte, rf_pred))
-print(f"  Random Forest  -> MAE={rf_mae:.3f}  R2={rf_r2:.4f}  RMSE={rf_rmse:.3f}")
-
-print("Training Gradient Boosting (200 trees)...")
-gb = GradientBoostingRegressor(n_estimators=200, max_depth=6, learning_rate=0.05, min_samples_leaf=3, random_state=SEED)
-gb.fit(Xtr_s, ytr)
-gb_pred = gb.predict(Xte_s)
-gb_mae  = mean_absolute_error(yte, gb_pred)
-gb_r2   = r2_score(yte, gb_pred)
-print(f"  Gradient Boost -> MAE={gb_mae:.3f}  R2={gb_r2:.4f}")
-
-best_model = rf if rf_r2>=gb_r2 else gb
-best_name  = "Random Forest" if rf_r2>=gb_r2 else "Gradient Boosting"
-best_mae   = rf_mae if rf_r2>=gb_r2 else gb_mae
-best_r2    = rf_r2 if rf_r2>=gb_r2 else gb_r2
+best_model = RandomForestRegressor(
+    n_estimators=300, max_depth=16, min_samples_leaf=2,
+    min_samples_split=4, max_features='sqrt', random_state=SEED, n_jobs=-1
+)
+best_model.fit(Xtr_s, ytr)
+predictions = best_model.predict(Xte_s)
+best_mae = mean_absolute_error(yte, predictions)
+best_r2 = r2_score(yte, predictions)
+rmse = np.sqrt(mean_squared_error(yte, predictions))
+best_name = "Random Forest"
+print(f"  {best_name} -> MAE={best_mae:.3f}  R2={best_r2:.4f}  RMSE={rmse:.3f}")
 
 print(f"\nFeature importance ({best_name}):")
 for f,imp in sorted(zip(FEATURES, best_model.feature_importances_), key=lambda x:-x[1]):
@@ -138,7 +126,7 @@ joblib.dump(scaler,     os.path.join(DIR,"scaler.pkl"))
 joblib.dump(FEATURES,   os.path.join(DIR,"features.pkl"))
 
 print(f"\n{'='*60}")
-print(f"FINAL: {best_name}  MAE={best_mae:.3f}  R2={best_r2:.4f}  RMSE={rf_rmse:.3f}")
+print(f"FINAL: {best_name}  MAE={best_mae:.3f}  R2={best_r2:.4f}  RMSE={rmse:.3f}")
 print(f"Features: {len(FEATURES)}  Samples: 4000")
 print(f"Saved to: {DIR}/")
 print(f"{'='*60}")

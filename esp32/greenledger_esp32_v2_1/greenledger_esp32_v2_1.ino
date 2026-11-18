@@ -1,10 +1,9 @@
 /*
  * GreenLedger — ESP32 Sensor Node v2.1
  * =====================================
- * Sensors  : Soil Moisture (GPIO34) + DHT11 (GPIO4)
+ * Sensors  : Soil Moisture (GPIO34) + DHT11 (GPIO15)
  * EC sensor removed — not available in current prototype
- * Sends    : JSON POST to Flask API every 30s
- * Security : Device token in every request header
+ * Sends    : Sensor readings + backend ML estimate to ThingSpeak every 30s
  *
  * Wiring:
  *   Soil Moisture AOUT  →  GPIO34
@@ -15,7 +14,6 @@
  *   DHT11 GND           →  GND
  *
  * Libraries needed (Arduino Library Manager):
- *   ArduinoJson v6   by Benoit Blanchon
  *   DHT sensor       by Adafruit
  *   Adafruit Unified Sensor
  *
@@ -25,24 +23,17 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
+#include "secrets.h"
 
-/* ════ CHANGE THESE ══════════════════════════════════════ */
-const char* WIFI_SSID     = "Chirag";
-const char* WIFI_PASSWORD = "11111111";
-
-// Use local backend while testing on laptop:
-//const char* API_URL = "http://192.168.1.8:5000/api/sensors/data";
-
-// Switch to this when using Railway:
-const char* API_URL = "https://greenledger-api-tzkg.onrender.com/api/sensors/data";
-
-const char* FARM_ID      = "F-01";
-const char* DEVICE_ID    = "GL-F01";
-const char* DEVICE_TOKEN = "gl-f01-a3f9c2e1";
+/* Keep WiFi credentials and the ThingSpeak Write API Key in secrets.h. */
+const char* THINGSPEAK_URL = "https://api.thingspeak.com/update";
 
 const unsigned long SEND_INTERVAL = 30000UL; // 30 seconds
+const unsigned long WIFI_RETRY_INTERVAL = 10000UL;
+const unsigned long WIFI_CONNECT_TIMEOUT = 20000UL;
 /* ════════════════════════════════════════════════════════ */
 
 /* ── Pin definitions ── */
@@ -58,15 +49,17 @@ const int SOIL_DRY = 3239;  // adjust after calibration
 const int SOIL_WET = 1525;  // adjust after calibration
 
 DHT dht(DHT_PIN, DHT_TYPE);
-unsigned long lastSent = 0;
+unsigned long lastSendAttempt = 0;
+unsigned long lastWiFiAttempt = 0;
+unsigned long wifiAttemptStartedAt = 0;
+bool wifiConnecting = false;
 
 /* ════════════════════════════════════════════════════════ */
 void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== GreenLedger ESP32 Sensor Node v2.1 ===");
-  Serial.print("Farm: ");   Serial.println(FARM_ID);
-  Serial.print("Device: "); Serial.println(DEVICE_ID);
+  Serial.println("Destination: GreenLedger ML + ThingSpeak");
   Serial.println("Sensors: Soil Moisture + DHT11");
   Serial.println("==========================================\n");
 
@@ -75,15 +68,18 @@ void setup() {
   dht.begin();
   delay(2000); // DHT11 needs 2 seconds to stabilise
 
-  connectWiFi();
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  startWiFiConnection();
 }
 
 void loop() {
-  // Reconnect WiFi if dropped
-  if (WiFi.status() != WL_CONNECTED) connectWiFi();
+  maintainWiFiConnection();
 
   unsigned long now = millis();
-  if (lastSent == 0 || now - lastSent >= SEND_INTERVAL) {
+  if (lastSendAttempt == 0 || now - lastSendAttempt >= SEND_INTERVAL) {
+    // Schedule the next attempt even when offline, instead of retrying every loop.
+    lastSendAttempt = now;
 
     float moisture, temp, humidity, soc, ph;
 
@@ -96,11 +92,23 @@ void loop() {
 
     printReadings(moisture, temp, humidity, soc, ph);
 
-    if (sendToAPI(moisture, temp, humidity, soc, ph)) {
-      lastSent = now;
+    float co2Tons = 0.0f;
+    float modelConfidence = 0.0f;
+    int credits = 0;
+    bool hasModelEstimate = getModelEstimate(
+      moisture, temp, co2Tons, credits, modelConfidence
+    );
+
+    if (hasModelEstimate) {
+      Serial.print("[ML] Estimated CO2: "); Serial.print(co2Tons, 3);
+      Serial.print(" tonnes; credits: "); Serial.println(credits);
+    }
+
+    if (sendToThingSpeak(moisture, temp, humidity, soc, ph,
+                         hasModelEstimate, co2Tons, credits, modelConfidence)) {
       blink(2, 150); // 2 blinks = success
     } else {
-      Serial.println("[ERROR] API send failed — retrying in 30s");
+      Serial.println("[ERROR] ThingSpeak update failed — retrying in 30s");
       blink(5, 80);  // 5 rapid blinks = error
     }
   }
@@ -146,87 +154,163 @@ bool readSensors(float& moisture, float& temp, float& humidity,
     delay(2000);
   }
 
- // CORRECT
-Serial.println("[DHT] All 3 attempts failed — check wiring on GPIO15");;
+  Serial.println("[DHT] All 3 attempts failed — check wiring on GPIO15");
   return false;
 }
 
-/* ── Send to backend API ── */
-bool sendToAPI(float moisture, float temp, float humidity,
-               float soc, float ph) {
+/* ── Request an estimate from the GreenLedger Random Forest API ── */
+bool getModelEstimate(float moisture, float temperature, float& co2Tons,
+                      int& credits, float& confidence) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[ML] Skipped: WiFi is offline");
+    return false;
+  }
+  if (String(AI_ESTIMATE_URL).startsWith("https://YOUR_") ||
+      FARM_NDVI < 0.0f || FARM_NDVI > 1.0f ||
+      FARM_AREA_HECTARES <= 0.0f || FARM_SOIL_ORGANIC_CARBON <= 0.0f) {
+    Serial.println("[ML] Configure API URL and farm inputs in secrets.h");
+    return false;
+  }
+
+  StaticJsonDocument<384> requestDoc;
+  requestDoc["ndvi"] = FARM_NDVI;
+  requestDoc["area_hectares"] = FARM_AREA_HECTARES;
+  requestDoc["soil_organic_carbon"] = FARM_SOIL_ORGANIC_CARBON;
+  requestDoc["temperature_avg"] = temperature;
+  requestDoc["soil_moisture_avg"] = moisture;
+  requestDoc["monitoring_months"] = FARM_MONITORING_MONTHS;
+  requestDoc["practice"] = FARM_PRACTICE;
+  requestDoc["crop_type"] = FARM_CROP_TYPE;
+
+  String body;
+  serializeJson(requestDoc, body);
+
+  WiFiClientSecure client;
+  // See the ThingSpeak request below: TLS is encrypted, but server validation
+  // should be enabled with a CA certificate before production use.
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(15000);
+  if (!http.begin(client, AI_ESTIMATE_URL)) {
+    Serial.println("[ML] Could not start API request");
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(body);
+  String response = http.getString();
+  http.end();
+
+  if (code != HTTP_CODE_OK) {
+    Serial.print("[ML] API HTTP code: "); Serial.println(code);
+    Serial.println("[ML] Estimate unavailable; sensor data will still upload");
+    return false;
+  }
+
+  StaticJsonDocument<512> responseDoc;
+  DeserializationError parseError = deserializeJson(responseDoc, response);
+  if (parseError || responseDoc["co2_tons"].isNull() ||
+      responseDoc["credits"].isNull()) {
+    Serial.println("[ML] Invalid estimate response; sensor data will still upload");
+    return false;
+  }
+
+  co2Tons = responseDoc["co2_tons"].as<float>();
+  credits = responseDoc["credits"].as<int>();
+  confidence = responseDoc["confidence"] | 0.0f;
+  return true;
+}
+
+/* ── Send sensor readings and optional ML outputs to ThingSpeak ── */
+bool sendToThingSpeak(float moisture, float temp, float humidity,
+                      float soc, float ph, bool hasModelEstimate,
+                      float co2Tons, int credits, float confidence) {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] Not connected — skipping send");
     return false;
   }
 
+  if (String(WIFI_SSID).startsWith("YOUR_") ||
+      String(WIFI_PASSWORD).startsWith("YOUR_") ||
+      String(THINGSPEAK_WRITE_API_KEY).startsWith("YOUR_")) {
+    Serial.println("[Config] Fill in WiFi and ThingSpeak values in secrets.h");
+    return false;
+  }
+
+  // Fields 1–5 are sensor values; 6–8 are ML CO2, credits and confidence.
+  String body = "field1=" + String(moisture, 1) +
+                "&field2=" + String(temp, 1) +
+                "&field3=" + String(humidity, 1) +
+                "&field4=" + String(soc, 2) +
+                "&field5=" + String(ph, 2);
+  if (hasModelEstimate) {
+    body += "&field6=" + String(co2Tons, 3) +
+            "&field7=" + String(credits) +
+            "&field8=" + String(confidence, 1);
+  }
+
+  WiFiClientSecure client;
+  // TLS encrypts the request. For production, replace this with setCACert()
+  // and a maintained CA certificate so the server identity is verified.
+  client.setInsecure();
   HTTPClient http;
-  http.begin(API_URL);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Device-Token", DEVICE_TOKEN);
   http.setTimeout(10000);
-
-  StaticJsonDocument<256> doc;
-  doc["farm_id"]       = FARM_ID;
-  doc["device_id"]     = DEVICE_ID;
-  doc["device_token"]  = DEVICE_TOKEN;
-  doc["soil_moisture"] = round(moisture * 10) / 10.0f;
-  doc["temperature"]   = round(temp     * 10) / 10.0f;
-  doc["humidity"]      = round(humidity * 10) / 10.0f;
-  doc["ec"]            = 0.0;   // no EC sensor in this prototype
-  doc["soc_estimated"] = round(soc * 100) / 100.0f;
-  doc["soil_ph"]       = round(ph  * 100) / 100.0f;
-
-  String body;
-  serializeJson(doc, body);
-  Serial.print("[POST] "); Serial.println(body);
-
+  if (!http.begin(client, THINGSPEAK_URL)) {
+    Serial.println("[ThingSpeak] Could not start HTTP request");
+    return false;
+  }
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  http.addHeader("THINGSPEAKAPIKEY", THINGSPEAK_WRITE_API_KEY);
   int code = http.POST(body);
   String resp = http.getString();
   http.end();
 
-  Serial.print("[HTTP] Response code: "); Serial.println(code);
+  Serial.print("[ThingSpeak] HTTP code: "); Serial.println(code);
+  Serial.print("[ThingSpeak] Entry response: "); Serial.println(resp);
 
-  if (code == 201) {
-    Serial.println("[OK] Reading accepted by GreenLedger API ✓");
-
-    // Check if any alerts were triggered
-    StaticJsonDocument<256> respDoc;
-    deserializeJson(respDoc, resp);
-    JsonArray alerts = respDoc["alerts"];
-    if (alerts.size() > 0) {
-      Serial.println("[ALERT] Server triggered alerts:");
-      for (const char* alert : alerts) {
-        Serial.print("  → "); Serial.println(alert);
-      }
-    }
+  // ThingSpeak returns the new entry ID; 0 means the update was rejected
+  // (often because the channel key is wrong or the update rate is too high).
+  if (code == HTTP_CODE_OK && resp.toInt() > 0) {
+    Serial.println("[OK] Reading saved to ThingSpeak");
     return true;
   }
 
-  Serial.print("[ERR] Server response: "); Serial.println(resp);
   return false;
 }
 
-/* ── WiFi connection ── */
-void connectWiFi() {
+/* ── Start a single WiFi connection attempt ── */
+void startWiFiConnection() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  wifiAttemptStartedAt = millis();
+  lastWiFiAttempt = wifiAttemptStartedAt;
+  wifiConnecting = true;
+}
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
+/* ── Monitor WiFi and retry without restarting an active connection ── */
+void maintainWiFiConnection() {
+  unsigned long now = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    if (wifiConnecting) {
+      wifiConnecting = false;
+      Serial.println("\n[WiFi] Connected!");
+      Serial.print("[WiFi] IP address: ");
+      Serial.println(WiFi.localIP());
+      blink(3, 200);
+    }
+    return;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✓ WiFi connected!");
-    Serial.print("  IP Address: ");
-    Serial.println(WiFi.localIP());
-    blink(3, 200);
-  } else {
-    Serial.println("\n✗ WiFi failed — will retry on next loop");
+  if (wifiConnecting && now - wifiAttemptStartedAt >= WIFI_CONNECT_TIMEOUT) {
+    Serial.println("\n[WiFi] Connection timed out; will retry shortly");
+    WiFi.disconnect();
+    wifiConnecting = false;
+    lastWiFiAttempt = now;
+  }
+
+  if (!wifiConnecting && now - lastWiFiAttempt >= WIFI_RETRY_INTERVAL) {
+    startWiFiConnection();
   }
 }
 

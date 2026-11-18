@@ -9,7 +9,7 @@
 
 GreenLedger is a full-stack IoT + AI platform that enables small Indian farmers to monitor carbon sequestration on their land and earn verified carbon credits — an income stream currently inaccessible to them due to high verification costs.
 
-**Stack:** Python Flask · MongoDB · scikit-learn Random Forest · ESP8266 NodeMCU · HTML/CSS/JS · Docker
+**Stack:** Python Flask · MongoDB · scikit-learn Random Forest · ESP32 · HTML/CSS/JS · Docker
 
 ---
 
@@ -90,8 +90,8 @@ greenledger/
 ├── frontend/
 │   └── index.html            ← full dashboard (single file)
 │
-└── esp8266/
-    └── greenledger_sensor.ino ← Arduino firmware
+└── esp32/
+    └── greenledger_esp32_v2_1/ ← ESP32 firmware (ThingSpeak upload)
 ```
 
 ---
@@ -124,10 +124,30 @@ curl -X POST http://localhost:5000/api/sensors/data \
 
 ---
 
-## ESP8266 Hardware Setup
+## ESP32 Hardware Setup and ThingSpeak
+
+The ESP32 sends readings to the GreenLedger AI endpoint for an estimate, then uploads sensor values and the model result to ThingSpeak every 30 seconds. If the AI endpoint is unavailable or farm inputs are not configured, sensor values still upload and the ML fields remain empty.
+
+### Create and configure a ThingSpeak channel
+
+1. Create a channel in ThingSpeak and enable these eight numeric fields:
+   - Field 1: Soil Moisture (%)
+   - Field 2: Temperature (°C)
+   - Field 3: Humidity (%)
+   - Field 4: Estimated SOC (%)
+   - Field 5: Estimated pH
+   - Field 6: Model CO₂ estimate (tonnes)
+   - Field 7: Model carbon credits
+   - Field 8: Model tree agreement (rough indicator)
+2. Save the channel, then open **API Keys** and copy its **Write API Key** (not the Channel ID or Read API Key).
+3. Copy `esp32/greenledger_esp32_v2_1/secrets.example.h` to `esp32/greenledger_esp32_v2_1/secrets.h`. Set WiFi, the ThingSpeak Write API Key, and `AI_ESTIMATE_URL` to your deployed backend's `/api/ai/estimate` endpoint.
+4. Set the farm's NDVI (0–1), area in hectares, and measured soil organic carbon (%) in `secrets.h`. These are required model inputs; the moisture-based SOC shown in Field 4 is a separate proxy and is not used as a measured value.
+5. Select **DOIT ESP32 DEVKIT V1** in Arduino IDE and upload the sketch. Install **ArduinoJson 6**, **DHT sensor library** by Adafruit, and **Adafruit Unified Sensor**. Open Serial Monitor at 115200 baud; a positive ThingSpeak entry response confirms upload.
+
+ThingSpeak's free channel tier requires at least 15 seconds between updates; this sketch sends every 30 seconds. Keep the Write API Key private. If ThingSpeak replies with `0`, check the key and channel fields, and make sure the update interval is not too short.
 
 ### Components
-- NodeMCU ESP8266 (any version)
+- DOIT ESP32 DEVKIT V1
 - Capacitive soil moisture sensor (or resistive)
 - DHT11 temperature + humidity sensor
 - Breadboard + jumper wires
@@ -135,10 +155,10 @@ curl -X POST http://localhost:5000/api/sensors/data \
 ### Wiring
 
 ```
-NodeMCU  →  Sensor
+ESP32    →  Sensor
 ─────────────────────────────
-A0       →  Soil moisture SIG
-D4       →  DHT11 DATA
+GPIO34   →  Soil moisture AOUT
+GPIO15   →  DHT11 DATA
 3.3V     →  VCC (both sensors)
 GND      →  GND (both sensors)
 ```
@@ -146,14 +166,12 @@ GND      →  GND (both sensors)
 ### Flash the firmware
 
 1. Install [Arduino IDE](https://www.arduino.cc/en/software)
-2. Add ESP8266 board: `File > Preferences > Additional URLs`:  
-   `http://arduino.esp8266.com/stable/package_esp8266com_index.json`
-3. Install via Library Manager: **ArduinoJson**, **DHT sensor library**, **Adafruit Unified Sensor**
-4. Open `esp8266/greenledger_sensor.ino`
-5. Edit the config block at the top (WiFi credentials + your laptop IP)
-6. **Tools > Board > NodeMCU 1.0 (ESP-12E)** → Upload
-
-Find your laptop IP: run `ipconfig` on Windows, look for IPv4 Address.
+2. Install the ESP32 board package in Arduino IDE if needed.
+3. Install via Library Manager: **DHT sensor library** by Adafruit and **Adafruit Unified Sensor**.
+4. Open `esp32/greenledger_esp32_v2_1/greenledger_esp32_v2_1.ino`.
+5. Copy `secrets.example.h` to `secrets.h` in the same folder and fill in WiFi, ThingSpeak, backend URL, and farm inputs there.
+6. Install **ArduinoJson 6**, **DHT sensor library** by Adafruit, and **Adafruit Unified Sensor**.
+7. Select **DOIT ESP32 DEVKIT V1** and upload.
 
 ---
 
@@ -162,12 +180,14 @@ Find your laptop IP: run `ipconfig` on Windows, look for IPv4 Address.
 | Property | Value |
 |----------|-------|
 | Algorithm | Random Forest Regressor |
-| Trees | 200 |
-| Features | NDVI, area, SOC%, avg temp, avg moisture, months, practice |
+| Trees | 300 |
+| Features | NDVI, area, SOC%, avg temp, avg moisture, months, practice, practice years, soil type, irrigation, season |
 | Target | CO₂ sequestered (tonnes) |
-| R² score | ~0.94 |
-| MAE | ~1.5 t CO₂ |
+| Training data | Synthetic generated samples (not field-validated) |
+| R² / MAE | Printed at training time; synthetic holdout metrics are not real-world accuracy |
 | Carbon formula | `Credits = floor(CO₂_tonnes)` · 1 credit = 1 tonne |
+
+The deployment start commands train the model before starting Gunicorn. For local development, install `backend/requirements.txt`, then run `python model/train_model.py` from the `backend` folder before starting the API. The ESP32's ML fields require the backend to be deployed and its `/api/ai/estimate` URL and farm inputs to be configured. Estimates are prototype outputs, not verified carbon credits. Training uses synthetic data, so its reported holdout scores do not establish real-world accuracy.
 
 ---
 

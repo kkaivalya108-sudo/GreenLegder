@@ -38,3 +38,6 @@ mongo_data/
 
 # Logs
 *.log
+
+# ESP32 local credentials
+/esp32/greenledger_esp32_v2_1/secrets.h

@@ -5,6 +5,7 @@ Supports both old (7 features) and new (11 features) models.
 """
 import numpy as np
 import joblib, os
+from sklearn.ensemble import RandomForestRegressor
 
 _DIR    = os.path.dirname(os.path.abspath(__file__))
 _model  = None
@@ -54,11 +55,18 @@ def predict(ndvi, area_hectares, soil_organic_carbon,
             float(monitoring_months), prac_enc
         ]])
 
-    Xs    = _scaler.transform(X)
-    preds = np.array([t.predict(Xs)[0] for t in _model.estimators_])
-    co2   = float(max(0, np.mean(preds)))
-    std   = float(np.std(preds))
-    conf  = max(0.0, round(100-(std/(co2+1e-6))*100, 1))
+    Xs = _scaler.transform(X)
+    # Always use the estimator's public prediction API. Averaging the
+    # estimators_ of GradientBoostingRegressor averages residual trees, not
+    # complete predictions. Tree spread is only a rough RF disagreement score.
+    co2 = float(max(0, _model.predict(Xs)[0]))
+    if isinstance(_model, RandomForestRegressor):
+        tree_preds = np.array([tree.predict(Xs)[0] for tree in _model.estimators_])
+        std = float(np.std(tree_preds))
+        conf = max(0.0, round(100 - (std / (co2 + 1e-6)) * 100, 1))
+    else:
+        std = 0.0
+        conf = None
 
     return {
         "co2_tons":   round(co2, 3),
